@@ -20,8 +20,16 @@ export default function Home() {
               우리동네 생활 정보 <span className="text-blue-600 font-semibold text-lg sm:text-xl">성남시</span>
             </h1>
           </div>
-          <div className="text-xs text-blue-700 bg-blue-50 px-3 py-1.5 rounded-full font-medium border border-blue-200/60">
-            실시간 지역 소식 알리미
+          <div className="flex items-center gap-4">
+            <Link 
+              href="/blog"
+              className="text-sm font-semibold text-blue-600 hover:text-blue-800 transition"
+            >
+              블로그
+            </Link>
+            <div className="text-xs text-blue-700 bg-blue-50 px-3 py-1.5 rounded-full font-medium border border-blue-200/60">
+              실시간 지역 소식 알리미
+            </div>
           </div>
         </div>
       </header>
@@ -90,7 +98,7 @@ export default function Home() {
                     <div>👥 <span className="font-semibold text-zinc-700">대상:</span> {event.target}</div>
                     <div className="pt-3 text-right">
                       <Link 
-                        href={`/info/${event.id}`}
+                        href="/blog"
                         className={`inline-block text-xs font-bold underline ${
                           isPink ? "text-pink-600 hover:text-pink-800" : 
                           isGreen ? "text-emerald-600 hover:text-emerald-800" :
@@ -145,7 +153,7 @@ export default function Home() {
                   <div>👥 <span className="font-semibold text-zinc-700">지원대상:</span> {benefit.target}</div>
                   <div className="pt-3 text-right">
                     <Link 
-                      href={`/info/${benefit.id}`}
+                      href="/blog"
                       className="inline-block text-xs font-bold text-indigo-700 hover:text-indigo-900 underline"
                     >
                       지원 대상 확인 및 신청방법 &rarr;

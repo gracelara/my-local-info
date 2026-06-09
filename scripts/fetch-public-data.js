@@ -1,71 +1,82 @@
 const fs = require('fs');
 const path = require('path');
 
-// 1. 기존 데이터 읽기
-const dataPath = path.join(__dirname, '../public/data/local-info.json');
-let existingData = { lastUpdated: '', items: [] };
-
-try {
-  if (fs.existsSync(dataPath)) {
-    existingData = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
-  }
-} catch (e) {
-  console.error("기존 데이터를 불러오는 중 오류 발생:", e);
-}
-
-// 기존 등록된 이름/제목 집합
-const existingNames = new Set(
-  existingData.items.map(item => item.name || item.title || "")
-);
-
 async function run() {
   const apiKey = process.env.PUBLIC_DATA_API_KEY;
-  if (!apiKey || apiKey.includes("여기에_본인_공공데이터")) {
-    console.error("에러: PUBLIC_DATA_API_KEY 환경변수가 설정되지 않았습니다.");
-    return;
-  }
-
   const geminiApiKey = process.env.GEMINI_API_KEY;
-  if (!geminiApiKey || geminiApiKey.includes("여기에_본인_Gemini")) {
-    console.error("에러: GEMINI_API_KEY 환경변수가 설정되지 않았습니다.");
+
+  if (!apiKey) {
+    console.error("에러: PUBLIC_DATA_API_KEY 환경변수가 없습니다.");
+    return;
+  }
+  if (!geminiApiKey) {
+    console.error("에러: GEMINI_API_KEY 환경변수가 없습니다.");
     return;
   }
 
-  // 1단계: 공공데이터포털 API 호출
+  // 1. 기존 데이터 읽기
+  const dataPath = path.join(__dirname, '../public/data/local-info.json');
+  let existingData = { lastUpdated: '', items: [] };
+  try {
+    if (fs.existsSync(dataPath)) {
+      existingData = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
+    }
+  } catch (e) {
+    console.error("기존 데이터를 불러오는 중 오류 발생:", e);
+    return;
+  }
+
+  const existingNames = new Set(
+    existingData.items.map(item => item.name || item.title || "")
+  );
+
   let decodedKey = apiKey;
   try {
     decodedKey = decodeURIComponent(apiKey);
   } catch (e) {}
 
-  const url = `https://api.odcloud.kr/api/gov24/v3/serviceList?page=1&perPage=20&returnType=JSON&serviceKey=${encodeURIComponent(decodedKey)}`;
-
-  console.log("공공데이터 API 호출 중...");
-  
+  // [1단계] 공공데이터포털 API에서 데이터 가져오기
+  const url = 'https://api.odcloud.kr/api/gov24/v3/serviceList?page=1&perPage=20&returnType=JSON';
   let services = [];
+
   try {
-    const response = await fetch(url, {
+    // 1차 시도: 헤더에 인증키 넣기 (API 표준)
+    let response = await fetch(url, {
       headers: {
         'Authorization': `Infuser ${decodedKey}`
       }
     });
 
+    // 1차 시도가 실패한 경우 쿼리 파라미터 방식으로 2차 시도
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+      const fallbackUrl = `${url}&serviceKey=${encodeURIComponent(decodedKey)}`;
+      response = await fetch(fallbackUrl);
     }
 
-    const json = await response.json();
-    services = json.data || [];
+    const responseData = await response.json().catch(() => null);
+
+    if (!response.ok || (responseData && responseData.code === -4)) {
+      const errorMsg = responseData ? responseData.msg : `상태 코드 ${response.status}`;
+      throw new Error(
+        `API 인증 실패 (${errorMsg}).\n` +
+        `원인: 공공데이터포털(data.go.kr)에 등록되지 않았거나 대기 중인 인증키입니다.\n` +
+        `해결방법: .env.local 파일의 PUBLIC_DATA_API_KEY에 올바른 인증키(Decoding 키 권장)를 입력해 주세요.`
+      );
+    }
+
+    services = (responseData && responseData.data) || [];
   } catch (e) {
-    console.error("공공데이터 API 호출 실패:", e);
+    console.error("\n[오류 발생] 공공데이터 API 호출에 실패했습니다.");
+    console.error(e.message || e);
     return;
   }
 
   if (services.length === 0) {
-    console.log("새로운 데이터가 없습니다. (API 응답이 비어있음)");
+    console.log("새로운 데이터가 없습니다");
     return;
   }
 
-  // 필드 도우미 함수
+  // 필드 값을 안전하게 가져오는 보조 함수
   function getField(item, keys) {
     for (const key of keys) {
       if (item[key] !== undefined && item[key] !== null) {
@@ -75,37 +86,26 @@ async function run() {
     return "";
   }
 
-  // 필터링 규칙 적용
-  // 1. "성남" 포함 필터링
-  let filtered = services.filter(item => {
+  // 필터링 키워드 포함 확인 함수
+  function checkKeyword(item, keyword) {
     const name = getField(item, ['서비스명', 'svcNm', 'serviceName']);
     const purpose = getField(item, ['서비스목적요약', '서비스목적', 'svcPps']);
     const target = getField(item, ['지원대상', 'target']);
     const agency = getField(item, ['소관기관명', '소관기관', 'deptNm']);
-    const text = [name, purpose, target, agency].join(" ");
-    return text.includes("성남");
-  });
-
-  // 2. "성남" 없으면 "경기" 포함 필터링
-  if (filtered.length === 0) {
-    console.log("'성남' 관련 데이터가 없어 '경기' 관련 데이터로 필터링합니다.");
-    filtered = services.filter(item => {
-      const name = getField(item, ['서비스명', 'svcNm', 'serviceName']);
-      const purpose = getField(item, ['서비스목적요약', '서비스목적', 'svcPps']);
-      const target = getField(item, ['지원대상', 'target']);
-      const agency = getField(item, ['소관기관명', '소관기관', 'deptNm']);
-      const text = [name, purpose, target, agency].join(" ");
-      return text.includes("경기");
-    });
+    const combinedText = [name, purpose, target, agency].join(" ");
+    return combinedText.includes(keyword);
   }
 
-  // 3. 둘 다 없으면 전체 데이터 사용
+  // 필터링 규칙 적용
+  let filtered = services.filter(item => checkKeyword(item, "성남"));
   if (filtered.length === 0) {
-    console.log("'성남' 및 '경기' 관련 데이터가 없어 전체 데이터를 사용합니다.");
+    filtered = services.filter(item => checkKeyword(item, "부산"));
+  }
+  if (filtered.length === 0) {
     filtered = services;
   }
 
-  // 중복 제거 (name 기준)
+  // [2단계] 기존 데이터와 비교 (중복 제거)
   const newCandidates = filtered.filter(item => {
     const name = getField(item, ['서비스명', 'svcNm', 'serviceName']);
     return name && !existingNames.has(name);
@@ -116,12 +116,10 @@ async function run() {
     return;
   }
 
-  // 1건 추출
+  // 가장 첫 번째 신규 항목 선택
   const targetItem = newCandidates[0];
-  const targetName = getField(targetItem, ['서비스명', 'svcNm', 'serviceName']);
-  console.log(`선택된 새로운 서비스: ${targetName}`);
 
-  // 3단계: Gemini AI로 새 항목 1개 가공
+  // [3단계] Gemini AI로 새 항목 1개만 가공
   const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`;
 
   const prompt = `아래 공공데이터 1건을 분석해서 JSON 객체로 변환해줘. 형식:
@@ -133,11 +131,9 @@ startDate가 없으면 오늘 날짜, endDate가 없으면 '상시'로 넣어.
 공공데이터 내용:
 ${JSON.stringify(targetItem, null, 2)}`;
 
-  console.log("Gemini AI를 이용하여 데이터를 가공하는 중...");
-  
   let processedItem = null;
   try {
-    const geminiResponse = await fetch(geminiUrl, {
+    const response = await fetch(geminiUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -155,44 +151,41 @@ ${JSON.stringify(targetItem, null, 2)}`;
       })
     });
 
-    if (!geminiResponse.ok) {
-      throw new Error(`Gemini HTTP error! status: ${geminiResponse.status}`);
+    if (!response.ok) {
+      throw new Error(`Gemini API 오류 상태 코드: ${response.status}`);
     }
 
-    const geminiJson = await geminiResponse.json();
+    const geminiJson = await response.json();
     const responseText = geminiJson.candidates[0].content.parts[0].text;
-    
-    // 마크다운 코드블록 제거
-    const cleanJson = responseText.replace(/```json|```/g, "").trim();
+
+    // 마크다운 코드 블록 제거 및 JSON 추출
+    let cleanJson = responseText.replace(/```json|```/g, "").trim();
+    const startIdx = cleanJson.indexOf('{');
+    const endIdx = cleanJson.lastIndexOf('}');
+    if (startIdx !== -1 && endIdx !== -1) {
+      cleanJson = cleanJson.substring(startIdx, endIdx + 1);
+    }
+
     processedItem = JSON.parse(cleanJson);
   } catch (e) {
-    console.error("Gemini AI 가공 중 오류 발생. 기존 데이터 보존:", e);
+    console.error("Gemini AI 데이터 가공 중 오류 발생. 기존 데이터를 보존합니다:", e);
     return;
   }
 
   if (!processedItem) {
-    console.error("가공된 데이터가 없습니다.");
+    console.error("가공된 데이터가 올바르지 않습니다.");
     return;
   }
 
-  // 호환성 처리 (name 필드를 title로 매핑하여 저장 등)
-  processedItem.title = processedItem.name || processedItem.title;
-  if (processedItem.category === '행사') {
-    processedItem.category = '행사/축제';
-  } else if (processedItem.category === '혜택') {
-    processedItem.category = '지원금/혜택';
-  }
-
-  // 4단계: 기존 데이터에 추가 및 파일 저장
+  // [4단계] 기존 데이터에 추가 및 저장
   existingData.items.push(processedItem);
   existingData.lastUpdated = new Date().toISOString().split('T')[0];
 
   try {
     fs.writeFileSync(dataPath, JSON.stringify(existingData, null, 2), 'utf8');
-    console.log("성공적으로 새로운 항목 1건을 수집하고 local-info.json에 추가하였습니다!");
-    console.log("추가된 항목:", processedItem);
+    console.log("성공적으로 새로운 데이터를 수집하여 추가했습니다.");
   } catch (e) {
-    console.error("데이터 파일 저장 실패:", e);
+    console.error("데이터 파일 저장 중 오류 발생. 기존 데이터를 보존합니다:", e);
   }
 }
 
